@@ -108,7 +108,19 @@ def make_windows(series: np.ndarray, window: int) -> Tuple[np.ndarray, np.ndarra
     Keras RNN layers expect inputs shaped as (batch, time, features).
     Here features=1 because the time series is univariate.
     """
-    raise NotImplementedError
+    T = len(series)
+    if not (1 <= window < T):
+        raise ValueError("Window size must satisfy: 1 <= window < len(series)")
+    
+    N = T - window
+    X = np.empty((N, window, 1), dtype=series.dtype)
+    y = np.empty((N, 1), dtype=series.dtype)
+    
+    for i in range(N):
+        X[i, :, 0] = series[i : i + window]
+        y[i, 0] = series[i + window]
+        
+    return X, y
 
 
 def time_split(
@@ -148,7 +160,22 @@ def time_split(
     - Do NOT shuffle.
     - The split is performed on already-windowed samples.
     """
-    raise NotImplementedError
+    if train_frac < 0 or val_frac < 0 or (train_frac + val_frac) > 1.0:
+        raise ValueError("Invalid fractions. They must be positive and sum to <= 1.0")
+        
+    N = len(X)
+    
+    train_end = int(round(N * train_frac))
+    val_end = int(round(N * (train_frac + val_frac)))
+    
+    if train_end <= 0 or val_end <= train_end or val_end >= N:
+        raise ValueError("Splits resulted in an empty dataset. Adjust fractions or input size.")
+        
+    X_train, y_train = X[:train_end], y[:train_end]
+    X_val, y_val = X[train_end:val_end], y[train_end:val_end]
+    X_test, y_test = X[val_end:], y[val_end:]
+    
+    return (X_train, y_train), (X_val, y_val), (X_test, y_test)
 
 
 def build_model(
@@ -186,7 +213,21 @@ def build_model(
     -----
     You may change the architecture slightly, but keep I/O shapes the same.
     """
-    raise NotImplementedError
+    model = tf.keras.Sequential([
+        # Входной слой с размерностью (window, 1)
+        tf.keras.layers.LSTM(n_units, input_shape=(window, 1)),
+        tf.keras.layers.Dropout(dropout),
+        tf.keras.layers.Dense(dense_units, activation="relu"),
+        tf.keras.layers.Dense(1)  # 1 выходной нейрон для one-step forecasting
+    ])
+    
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
+        loss="mse",
+        metrics=["mae"]
+    )
+    
+    return model
 
 
 def train_model(
@@ -245,7 +286,30 @@ def train_model(
     - Prefer using EarlyStopping (optional) to reduce overfitting.
     - Keep the function deterministic as much as possible.
     """
-    raise NotImplementedError
+    tf.keras.utils.set_random_seed(seed)
+    try:
+        tf.config.experimental.enable_op_determinism()
+    except Exception:
+        pass  # В некоторых окружениях детерминизм может быть недоступен
+        
+    X, y = make_windows(series, window)
+    
+    (X_train, y_train), (X_val, y_val), (X_test, y_test) = time_split(
+        X, y, train_frac=train_frac, val_frac=val_frac
+    )
+    
+    model = build_model(window=window)
+
+    history = model.fit(
+        X_train,
+        y_train,
+        validation_data=(X_val, y_val),
+        epochs=epochs,
+        batch_size=batch_size,
+        verbose=verbose
+    )
+    
+    return model, X_test, y_test, history
 
 
 # ----------------------------
